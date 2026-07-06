@@ -1,0 +1,6 @@
+.venv/
+*.log
+nohup.out
+__pycache__/
+.DS_Store
+com.neuralprofit.whisperflow.plist
