@@ -1,6 +1,5 @@
-.venv/
-*.log
-nohup.out
-__pycache__/
-.DS_Store
-com.neuralprofit.whisperflow.plist
+(config.json is a source/config file, so no changes needed to .gitignore)
+
+```json
+
+```
