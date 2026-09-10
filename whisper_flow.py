@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """WhisperFlow - локальная диктовка в любом окне (клон Wispr Flow).
 
-Зажала правый Option - говоришь - отпустила - текст вставился.
+Зажала Control - говоришь - отпустила - текст вставился.
 Короткое нажатие - запись идет до следующего нажатия. Esc - отмена записи.
 Распознавание полностью локальное: mlx-whisper на чипе Apple.
 """
@@ -34,11 +34,10 @@ ICON_BUSY = "⏳"
 # Состояния
 IDLE, RECORDING, BUSY = "idle", "recording", "busy"
 
-# Клавиатура может прислать Option любым из этих кодов (у Сони правый
-# Option приходит как общий Key.alt <58>), поэтому принимаем всю семью.
-ALT_KEYS = {
+# Клавиатура может прислать Control любым из этих кодов, поэтому принимаем всю семью.
+CONTROL_KEYS = {
     getattr(keyboard.Key, name)
-    for name in ("alt", "alt_l", "alt_r", "alt_gr")
+    for name in ("ctrl", "ctrl_l", "ctrl_r")
     if hasattr(keyboard.Key, name)
 }
 # Если зажат другой модификатор - это сочетание клавиш, а не диктовка
@@ -46,7 +45,7 @@ GUARD_MODIFIERS = {
     getattr(keyboard.Key, name)
     for name in (
         "cmd", "cmd_l", "cmd_r",
-        "ctrl", "ctrl_l", "ctrl_r",
+        "alt", "alt_l", "alt_r", "alt_gr",
         "shift", "shift_l", "shift_r",
     )
     if hasattr(keyboard.Key, name)
@@ -75,7 +74,7 @@ log = logging.getLogger("whisper_flow")
 
 def load_config() -> dict:
     defaults = {
-        "hotkey": "alt_r",
+        "hotkey": "ctrl_r",
         "model": "mlx-community/whisper-large-v3-turbo",
         "language": "auto",
         "sounds": True,
@@ -167,10 +166,10 @@ class WhisperFlowApp(rumps.App):
 
         # Глобальный слушатель клавиатуры (нужен «Мониторинг ввода»)
         hotkey_name = self.cfg["hotkey"]
-        if hotkey_name.startswith("alt"):
-            self.hotkeys = ALT_KEYS
+        if hotkey_name.startswith("ctrl"):
+            self.hotkeys = CONTROL_KEYS
         else:
-            self.hotkeys = {getattr(keyboard.Key, hotkey_name, keyboard.Key.alt_r)}
+            self.hotkeys = {getattr(keyboard.Key, hotkey_name, keyboard.Key.ctrl_r)}
         self.held_modifiers: set = set()
         self.hotkey_down = False
         self.listener = keyboard.Listener(
@@ -194,7 +193,7 @@ class WhisperFlowApp(rumps.App):
             )
             self.model_ready = True
             self.title = ICON_IDLE
-            self.item_status.title = "Готово: зажми Option и говори"
+            self.item_status.title = "Готово: зажми Control и говори"
             play_sound("Glass", self.cfg["sounds"])
             log.info("Модель загружена")
             if self.cfg.get("polish"):
@@ -250,7 +249,7 @@ class WhisperFlowApp(rumps.App):
         self.title = ICON_IDLE
         if not silent:
             play_sound("Basso", self.cfg["sounds"])
-        log.info("Запись отменена%s", " (шорткат с Option)" if silent else " (Esc)")
+        log.info("Запись отменена%s", " (шорткат с Control)" if silent else " (Esc)")
 
     def stop_and_transcribe(self):
         with self.lock:
@@ -369,7 +368,7 @@ class WhisperFlowApp(rumps.App):
         # Отладка: пишем в лог только служебные клавиши (не буквы), чтобы
         # понять, каким кодом приходит хоткей. Включается в config.json.
         if self.cfg.get("debug") and not isinstance(key, keyboard.KeyCode):
-            log.info("DEBUG нажата клавиша: %r (state=%s)", key, self.state)
+            log.info("DEBUG нажата клавиша: %r (state=%s, held_modifiers=%s)", key, self.state, self.held_modifiers)
         if key == keyboard.Key.esc:
             if self.state == RECORDING:
                 self.cancel_recording()
@@ -377,12 +376,15 @@ class WhisperFlowApp(rumps.App):
         if key in GUARD_MODIFIERS:
             self.held_modifiers.add(key)
         if key not in self.hotkeys:
-            # Другая клавиша, пока Option еще зажат = это сочетание клавиш,
+            # Другая клавиша, пока Control еще зажат = это сочетание клавиш,
             # а не диктовка - тихо отменяем случайно начатую запись
+            # НО: игнорируем KeyCode (символы), т.к. Control может генерировать
+            # события для ввода спецсимволов без фактического нажатия другой клавиши
             if (
                 self.hotkey_down
                 and self.state == RECORDING
                 and self.press_started_recording
+                and not isinstance(key, keyboard.KeyCode)
             ):
                 self.cancel_recording(silent=True)
             return
@@ -391,8 +393,8 @@ class WhisperFlowApp(rumps.App):
             if self.state == BUSY or not self.model_ready:
                 return
             if self.state == IDLE:
-                if self.held_modifiers:
-                    return  # зажат Cmd/Ctrl/Shift - это шорткат, не диктовка
+                if self.held_modifiers - self.hotkeys:  # исключаем сам Control
+                    return  # зажат Cmd/Alt/Shift - это шорткат, не диктовка
                 self.press_time = time.time()
                 self.press_started_recording = True
                 self.start_recording()
