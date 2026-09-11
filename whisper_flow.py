@@ -53,7 +53,7 @@ GUARD_MODIFIERS = {
     for name in (
         "cmd", "cmd_l", "cmd_r",
         "ctrl", "ctrl_l", "ctrl_r",
-        "alt", "alt_l", "alt_r", "alt_gr",
+        
     )
     if hasattr(keyboard.Key, name)
 }
@@ -198,7 +198,12 @@ class WhisperFlowApp(rumps.App):
         elif hotkey_name.startswith("alt"):
             self.hotkeys = ALT_KEYS
         else:
-            self.hotkeys = {getattr(keyboard.Key, hotkey_name, keyboard.Key.shift_r)}
+            try:
+                self.hotkeys = {getattr(keyboard.Key, hotkey_name)}
+            except AttributeError:
+                log.warning("Неизвестный хоткей '%s', используем shift_r по умолчанию", hotkey_name)
+                self.hotkeys = {keyboard.Key.shift_r}
+        log.info("Установленные хоткеи: %s", self.hotkeys)
         self.held_modifiers: set = set()
         self.hotkey_down = False
         self.listener = keyboard.Listener(
@@ -439,65 +444,71 @@ class WhisperFlowApp(rumps.App):
         # Отладка: пишем в лог только служебные клавиши (не буквы), чтобы
         # понять, каким кодом приходит хоткей. Включается в config.json.
         if self.cfg.get("debug") and not isinstance(key, keyboard.KeyCode):
-            log.info("DEBUG нажата клавиша: %r (state=%s)", key, self.state)
+            log.info("DEBUG нажата клавиша: %r (state=%s, hotkeys=%s)", key, self.state, self.hotkeys)
         if key == keyboard.Key.esc:
             if self.state == RECORDING:
                 log.info("Нажат Esc во время записи - отмена")
                 self.cancel_recording()
             return
-        # Хоткей не должен считаться блокирующим модификатором
-        if key in GUARD_MODIFIERS and key not in self.hotkeys:
-            self.held_modifiers.add(key)
-        if key not in self.hotkeys:
-            # Другая клавиша, пока Shift еще зажат = это сочетание клавиш,
-            # а не диктовка - тихо отменяем случайно начатую запись
-            if (
-                self.hotkey_down
-                and self.state == RECORDING
-                and self.press_started_recording
-            ):
-                log.info("Обнаружено сочетание клавиш во время записи - отмена")
-                self.cancel_recording(silent=True)
+        # Если это наш хоткей - обрабатываем его отдельно
+        if key in self.hotkeys:
+            self.hotkey_down = True
+            log.info("on_press: получена клавиша хоткея %r (state=%s, model_ready=%s)", key, self.state, self.model_ready)
+            with self.lock:
+                if self.state == BUSY or not self.model_ready:
+                    log.info("on_press: модель не готова или состояние BUSY - игнорирование нажатия")
+                    return
+                if self.state == IDLE:
+                    # Проверяем, не зажат ли другой модификатор (Cmd/Ctrl)
+                    other_modifiers = self.held_modifiers - self.hotkeys
+                    if other_modifiers:
+                        log.info("on_press: зажат другой модификатор (%s) - игнорирование", other_modifiers)
+                        return  # зажат Cmd/Ctrl - это шорткат, не диктовка
+                    self.press_time = time.time()
+                    self.press_started_recording = True
+                    log.info("on_press: начало записи (хоткей: %s)", key)
+                    self.start_recording()
+                    return
+                # state == RECORDING: второе нажатие в режиме переключателя
+                self.press_started_recording = False
+                log.info("on_press: второе нажатие - остановка записи")
+            threading.Thread(target=self.stop_and_transcribe, daemon=True).start()
             return
-        self.hotkey_down = True
-        with self.lock:
-            if self.state == BUSY or not self.model_ready:
-                log.info("on_press: модель не готова или состояние BUSY - игнорирование нажатия")
-                return
-            if self.state == IDLE:
-                # Исключаем сам хоткей из проверки модификаторов
-                other_modifiers = self.held_modifiers - self.hotkeys
-                if other_modifiers:
-                    log.info("on_press: зажат другой модификатор - игнорирование")
-                    return  # зажат Cmd/Ctrl/Alt - это шорткат, не диктовка
-                self.press_time = time.time()
-                self.press_started_recording = True
-                log.info("on_press: начало записи (хоткей: %s)", key)
-                self.start_recording()
-                return
-            # state == RECORDING: второе нажатие в режиме переключателя
-            self.press_started_recording = False
-            log.info("on_press: второе нажатие - остановка записи")
-        threading.Thread(target=self.stop_and_transcribe, daemon=True).start()
+        
+        # Это не наш хоткей - проверяем на другие модификаторы
+        if key in GUARD_MODIFIERS:
+            self.held_modifiers.add(key)
+        # Другая клавиша, пока хоткей еще зажат = это сочетание клавиш,
+        # а не диктовка - тихо отменяем случайно начатую запись
+        if (
+            self.hotkey_down
+            and self.state == RECORDING
+            and self.press_started_recording
+        ):
+            log.info("Обнаружено сочетание клавиш во время записи - отмена")
+            self.cancel_recording(silent=True)
 
     def on_release(self, key):
-        # Хоткей не должен считаться блокирующим модификатором
-        if key in GUARD_MODIFIERS and key not in self.hotkeys:
+        # Если это наш хоткей - обрабатываем его отдельно
+        if key in self.hotkeys:
+            log.info("on_release: отпущена клавиша хоткея %r (state=%s, press_started_recording=%s)", key, self.state, self.press_started_recording)
+            self.hotkey_down = False
+            if self.state != RECORDING or not self.press_started_recording:
+                log.info("on_release: состояние не RECORDING или press_started_recording=False")
+                return
+            held = time.time() - self.press_time
+            if held >= self.cfg["hold_threshold_sec"]:
+                # режим рации: отпустила - распознаем
+                log.info("on_release: удержание %.2f сек >= порога - запуск транскрипции", held)
+                threading.Thread(target=self.stop_and_transcribe, daemon=True).start()
+            else:
+                # короткий тап: переключатель, запись продолжается
+                log.info("Режим переключателя: запись до следующего нажатия (удержание %.2f сек)", held)
+            return
+        
+        # Это не наш хоткей - удаляем из модификаторов
+        if key in GUARD_MODIFIERS:
             self.held_modifiers.discard(key)
-        if key not in self.hotkeys:
-            return
-        self.hotkey_down = False
-        if self.state != RECORDING or not self.press_started_recording:
-            log.info("on_release: состояние не RECORDING или press_started_recording=False")
-            return
-        held = time.time() - self.press_time
-        if held >= self.cfg["hold_threshold_sec"]:
-            # режим рации: отпустила - распознаем
-            log.info("on_release: удержание %.2f сек >= порога - запуск транскрипции", held)
-            threading.Thread(target=self.stop_and_transcribe, daemon=True).start()
-        else:
-            # короткий тап: переключатель, запись продолжается
-            log.info("Режим переключателя: запись до следующего нажатия (удержание %.2f сек)", held)
 
     # ---------- меню ----------
 
