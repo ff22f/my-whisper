@@ -382,7 +382,8 @@ class WhisperFlowApp(rumps.App):
             if self.state == RECORDING:
                 self.cancel_recording()
             return
-        if key in GUARD_MODIFIERS:
+        # Хоткей не должен считаться блокирующим модификатором
+        if key in GUARD_MODIFIERS and key not in self.hotkeys:
             self.held_modifiers.add(key)
         if key not in self.hotkeys:
             # Другая клавиша, пока Shift еще зажат = это сочетание клавиш,
@@ -399,8 +400,10 @@ class WhisperFlowApp(rumps.App):
             if self.state == BUSY or not self.model_ready:
                 return
             if self.state == IDLE:
-                if self.held_modifiers:
-                    return  # зажат Cmd/Ctrl/Shift - это шорткат, не диктовка
+                # Исключаем сам хоткей из проверки модификаторов
+                other_modifiers = self.held_modifiers - self.hotkeys
+                if other_modifiers:
+                    return  # зажат Cmd/Ctrl/Alt - это шорткат, не диктовка
                 self.press_time = time.time()
                 self.press_started_recording = True
                 self.start_recording()
@@ -410,7 +413,8 @@ class WhisperFlowApp(rumps.App):
         threading.Thread(target=self.stop_and_transcribe, daemon=True).start()
 
     def on_release(self, key):
-        if key in GUARD_MODIFIERS:
+        # Хоткей не должен считаться блокирующим модификатором
+        if key in GUARD_MODIFIERS and key not in self.hotkeys:
             self.held_modifiers.discard(key)
         if key not in self.hotkeys:
             return
