@@ -41,6 +41,8 @@ ALT_KEYS = {
     for name in ("alt", "alt_l", "alt_r", "alt_gr")
     if hasattr(keyboard.Key, name)
 }
+# Клавиша Home для запуска записи
+HOME_KEY = {keyboard.Key.home}
 # Клавиатура может прислать Shift любым из этих кодов, поэтому принимаем всю семью.
 SHIFT_KEYS = {
     getattr(keyboard.Key, name)
@@ -197,6 +199,8 @@ class WhisperFlowApp(rumps.App):
             self.hotkeys = SHIFT_KEYS
         elif hotkey_name.startswith("alt"):
             self.hotkeys = ALT_KEYS
+        elif hotkey_name == "home":
+            self.hotkeys = HOME_KEY
         else:
             try:
                 self.hotkeys = {getattr(keyboard.Key, hotkey_name)}

@@ -1,1 +1,58 @@
-Nothing should be ignored based on the provided changes. The only modified file is `whisper_flow.py`, which is a source code file and should not be ignored. There are no build artifacts, dependencies, or temporary files in the change list that would warrant adding ignore rules.
+```gitignore
+# Compiled Python files
+*.pyc
+__pycache__/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+build/
+target/
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.local
+*.env.*
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Coverage reports
+.coverage
+coverage/
+htmlcov/
+
+# Python cache
+.mypy_cache/
+.pytest_cache/
+*.pyc
+*.pyo
+*.pyd
+
+# Temporary files
+*.tmp
+*.temp
+```
+
+Wait, let me reconsider. The only modified files are `config.json` and `whisper_flow.py` - both are source/config files. There are no build artifacts, dependencies, or temporary files in the change list. According to rule #6, if the change list contains only source or config files and no build artifacts, dependencies, or temp files, I should output an empty .gitignore.
+
+```gitignore
+
+```
