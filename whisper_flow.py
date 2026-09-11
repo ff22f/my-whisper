@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """WhisperFlow - локальная диктовка в любом окне (клон Wispr Flow).
 
-Зажала правый Option - говоришь - отпустила - текст вставился.
+Зажала правый Shift - говоришь - отпустила - текст вставился.
 Короткое нажатие - запись идет до следующего нажатия. Esc - отмена записи.
 Распознавание полностью локальное: mlx-whisper на чипе Apple.
 """
@@ -41,13 +41,19 @@ ALT_KEYS = {
     for name in ("alt", "alt_l", "alt_r", "alt_gr")
     if hasattr(keyboard.Key, name)
 }
+# Клавиатура может прислать Shift любым из этих кодов, поэтому принимаем всю семью.
+SHIFT_KEYS = {
+    getattr(keyboard.Key, name)
+    for name in ("shift", "shift_l", "shift_r")
+    if hasattr(keyboard.Key, name)
+}
 # Если зажат другой модификатор - это сочетание клавиш, а не диктовка
 GUARD_MODIFIERS = {
     getattr(keyboard.Key, name)
     for name in (
         "cmd", "cmd_l", "cmd_r",
         "ctrl", "ctrl_l", "ctrl_r",
-        "shift", "shift_l", "shift_r",
+        "alt", "alt_l", "alt_r", "alt_gr",
     )
     if hasattr(keyboard.Key, name)
 }
@@ -75,7 +81,7 @@ log = logging.getLogger("whisper_flow")
 
 def load_config() -> dict:
     defaults = {
-        "hotkey": "alt_r",
+        "hotkey": "shift_r",
         "model": "mlx-community/whisper-large-v3-turbo",
         "language": "auto",
         "sounds": True,
@@ -167,10 +173,12 @@ class WhisperFlowApp(rumps.App):
 
         # Глобальный слушатель клавиатуры (нужен «Мониторинг ввода»)
         hotkey_name = self.cfg["hotkey"]
-        if hotkey_name.startswith("alt"):
+        if hotkey_name.startswith("shift"):
+            self.hotkeys = SHIFT_KEYS
+        elif hotkey_name.startswith("alt"):
             self.hotkeys = ALT_KEYS
         else:
-            self.hotkeys = {getattr(keyboard.Key, hotkey_name, keyboard.Key.alt_r)}
+            self.hotkeys = {getattr(keyboard.Key, hotkey_name, keyboard.Key.shift_r)}
         self.held_modifiers: set = set()
         self.hotkey_down = False
         self.listener = keyboard.Listener(
@@ -194,7 +202,7 @@ class WhisperFlowApp(rumps.App):
             )
             self.model_ready = True
             self.title = ICON_IDLE
-            self.item_status.title = "Готово: зажми Option и говори"
+            self.item_status.title = "Готово: зажми Shift и говори"
             play_sound("Glass", self.cfg["sounds"])
             log.info("Модель загружена")
             if self.cfg.get("polish"):
@@ -250,7 +258,7 @@ class WhisperFlowApp(rumps.App):
         self.title = ICON_IDLE
         if not silent:
             play_sound("Basso", self.cfg["sounds"])
-        log.info("Запись отменена%s", " (шорткат с Option)" if silent else " (Esc)")
+        log.info("Запись отменена%s", " (шорткат с Shift)" if silent else " (Esc)")
 
     def stop_and_transcribe(self):
         with self.lock:
@@ -374,10 +382,11 @@ class WhisperFlowApp(rumps.App):
             if self.state == RECORDING:
                 self.cancel_recording()
             return
-        if key in GUARD_MODIFIERS:
+        # Хоткей не должен считаться блокирующим модификатором
+        if key in GUARD_MODIFIERS and key not in self.hotkeys:
             self.held_modifiers.add(key)
         if key not in self.hotkeys:
-            # Другая клавиша, пока Option еще зажат = это сочетание клавиш,
+            # Другая клавиша, пока Shift еще зажат = это сочетание клавиш,
             # а не диктовка - тихо отменяем случайно начатую запись
             if (
                 self.hotkey_down
@@ -391,8 +400,10 @@ class WhisperFlowApp(rumps.App):
             if self.state == BUSY or not self.model_ready:
                 return
             if self.state == IDLE:
-                if self.held_modifiers:
-                    return  # зажат Cmd/Ctrl/Shift - это шорткат, не диктовка
+                # Исключаем сам хоткей из проверки модификаторов
+                other_modifiers = self.held_modifiers - self.hotkeys
+                if other_modifiers:
+                    return  # зажат Cmd/Ctrl/Alt - это шорткат, не диктовка
                 self.press_time = time.time()
                 self.press_started_recording = True
                 self.start_recording()
@@ -402,7 +413,8 @@ class WhisperFlowApp(rumps.App):
         threading.Thread(target=self.stop_and_transcribe, daemon=True).start()
 
     def on_release(self, key):
-        if key in GUARD_MODIFIERS:
+        # Хоткей не должен считаться блокирующим модификатором
+        if key in GUARD_MODIFIERS and key not in self.hotkeys:
             self.held_modifiers.discard(key)
         if key not in self.hotkeys:
             return

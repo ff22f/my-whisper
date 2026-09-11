@@ -1,6 +1,1 @@
-.venv/
-*.log
-nohup.out
-__pycache__/
-.DS_Store
-com.neuralprofit.whisperflow.plist
+Nothing should be ignored based on the provided file changes. The only modified file is `whisper_flow.py`, which is a source code file and should not be added to .gitignore.
