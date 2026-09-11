@@ -73,13 +73,14 @@ JUNK_PHRASES = {
 
 logging.basicConfig(
     filename=LOG_PATH,
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
+    level=logging.DEBUG,
+    format="%(asctime)s %(levelname)s %(name)s %(funcName)s:%(lineno)d %(message)s",
 )
 log = logging.getLogger("whisper_flow")
 
 
 def load_config() -> dict:
+    log.info("Загрузка конфигурации из %s", CONFIG_PATH)
     defaults = {
         "hotkey": "shift_r",
         "model": "mlx-community/whisper-large-v3-turbo",
@@ -90,36 +91,55 @@ def load_config() -> dict:
         "max_recording_sec": 300,
     }
     try:
-        defaults.update(json.loads(CONFIG_PATH.read_text("utf-8")))
+        config_data = json.loads(CONFIG_PATH.read_text("utf-8"))
+        defaults.update(config_data)
+        log.info("Конфигурация загружена успешно")
     except FileNotFoundError:
-        pass
+        log.warning("Файл конфигурации не найден, используются значения по умолчанию")
+    except Exception as e:
+        log.error("Ошибка при загрузке конфигурации: %s", e)
     return defaults
 
 
 def save_config(cfg: dict) -> None:
-    CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), "utf-8")
+    log.debug("Сохранение конфигурации в %s", CONFIG_PATH)
+    try:
+        CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), "utf-8")
+        log.debug("Конфигурация сохранена успешно")
+    except Exception as e:
+        log.error("Ошибка при сохранении конфигурации: %s", e)
 
 
 def play_sound(name: str, enabled: bool) -> None:
     if enabled:
-        subprocess.Popen(
-            ["afplay", f"/System/Library/Sounds/{name}.aiff"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        log.debug("Воспроизведение звука: %s", name)
+        try:
+            subprocess.Popen(
+                ["afplay", f"/System/Library/Sounds/{name}.aiff"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            log.warning("Не удалось воспроизвести звук %s: %s", name, e)
 
 
 def get_clipboard() -> str:
     try:
-        return subprocess.run(["pbpaste"], capture_output=True, timeout=3).stdout.decode(
-            "utf-8", "replace"
-        )
-    except Exception:
+        result = subprocess.run(["pbpaste"], capture_output=True, timeout=3)
+        log.debug("Буфер обмена прочитан (%d байт)", len(result.stdout))
+        return result.stdout.decode("utf-8", "replace")
+    except Exception as e:
+        log.warning("Ошибка при чтении буфера обмена: %s", e)
         return ""
 
 
 def set_clipboard(text: str) -> None:
-    subprocess.run(["pbcopy"], input=text.encode("utf-8"), timeout=3)
+    log.debug("Запись в буфер обмена (%d символов)", len(text))
+    try:
+        subprocess.run(["pbcopy"], input=text.encode("utf-8"), timeout=3)
+        log.debug("Буфер обмена обновлен успешно")
+    except Exception as e:
+        log.error("Ошибка при записи в буфер обмена: %s", e)
 
 
 class WhisperFlowApp(rumps.App):
@@ -142,8 +162,7 @@ class WhisperFlowApp(rumps.App):
         self.kb = keyboard.Controller()
 
         # --- меню ---
-        self.item_status = rumps.MenuItem("Загружаю модель...")
-        self.item_status.set_callback(None)
+        self.item_status = rumps.MenuItem("Home", callback=self.menu_home)
         self.item_copy = rumps.MenuItem(
             "Скопировать последний текст", callback=self.menu_copy_last
         )
@@ -173,6 +192,7 @@ class WhisperFlowApp(rumps.App):
 
         # Глобальный слушатель клавиатуры (нужен «Мониторинг ввода»)
         hotkey_name = self.cfg["hotkey"]
+        log.info("Инициализация приложения. Хоткей: %s, модель: %s", hotkey_name, self.cfg["model"])
         if hotkey_name.startswith("shift"):
             self.hotkeys = SHIFT_KEYS
         elif hotkey_name.startswith("alt"):
@@ -187,72 +207,90 @@ class WhisperFlowApp(rumps.App):
         self.listener.start()
 
         threading.Thread(target=self.warmup_model, daemon=True).start()
-        log.info("Запуск. Хоткей: %s, модель: %s", hotkey_name, self.cfg["model"])
 
     # ---------- модель ----------
 
     def warmup_model(self):
         """Грузим веса заранее, чтобы первая диктовка не тормозила."""
+        log.info("Начало загрузки модели: %s", self.cfg["model"])
         try:
             import mlx_whisper
 
+            log.info("Вызов mlx_whisper.transcribe для прогрева модели")
             mlx_whisper.transcribe(
                 np.zeros(SAMPLE_RATE, dtype=np.float32),
                 path_or_hf_repo=self.cfg["model"],
             )
             self.model_ready = True
             self.title = ICON_IDLE
-            self.item_status.title = "Готово: зажми Shift и говори"
+            self.item_status.title = "Home"
             play_sound("Glass", self.cfg["sounds"])
-            log.info("Модель загружена")
+            log.info("Модель загружена успешно")
             if self.cfg.get("polish"):
+                log.info("Прогрев polish модели: %s", self.cfg.get("polish_model"))
                 self.polish("прогрев")  # заранее грузим редактора в память
         except Exception:
             log.exception("Не удалось загрузить модель")
             self.title = "⚠️"
-            self.item_status.title = "Ошибка загрузки модели (см. whisper_flow.log)"
+            self.item_status.title = "Home"
 
     # ---------- запись ----------
 
     def audio_callback(self, indata, frames, time_info, status):
+        if status:
+            log.warning("audio_callback: статус %s", status)
         self.chunks.append(indata.copy())
         self.frames_recorded += frames
         if (
             self.frames_recorded > self.cfg["max_recording_sec"] * SAMPLE_RATE
             and not self.auto_stopped
         ):
+            log.info("Достигнут лимит записи (%d сек) - автоостановка", self.cfg["max_recording_sec"])
             self.auto_stopped = True
             threading.Thread(target=self.stop_and_transcribe, daemon=True).start()
 
     def start_recording(self):
+        log.info("Инициализация записи")
         self.chunks = []
         self.frames_recorded = 0
         self.auto_stopped = False
-        self.stream = sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=1,
-            dtype="float32",
-            callback=self.audio_callback,
-        )
-        self.stream.start()
-        self.state = RECORDING
-        self.title = ICON_RECORDING
-        play_sound("Pop", self.cfg["sounds"])
-        log.info("Запись началась")
+        try:
+            log.info("Создание InputStream (sample_rate=%d, channels=1)", SAMPLE_RATE)
+            self.stream = sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=1,
+                dtype="float32",
+                callback=self.audio_callback,
+            )
+            self.stream.start()
+            self.state = RECORDING
+            self.title = ICON_RECORDING
+            play_sound("Pop", self.cfg["sounds"])
+            log.info("Запись началась успешно")
+        except Exception:
+            log.exception("Ошибка при старте записи")
+            self.state = IDLE
+            self.title = ICON_IDLE
 
     def _close_stream(self) -> np.ndarray:
         if self.stream is not None:
+            log.info("_close_stream: остановка и закрытие потока")
             self.stream.stop()
             self.stream.close()
             self.stream = None
         if not self.chunks:
+            log.warning("_close_stream: нет записанных фрагментов (chunks)")
             return np.zeros(0, dtype=np.float32)
-        return np.concatenate(self.chunks)[:, 0]
+        audio = np.concatenate(self.chunks)[:, 0]
+        log.info("_close_stream: собрано аудио (%d фрагментов, %.2f сек)", len(self.chunks), len(audio) / SAMPLE_RATE)
+        return audio
 
     def cancel_recording(self, silent=False):
         with self.lock:
             if self.state != RECORDING:
+                log.info("Отмена записи: состояние не RECORDING (%s)", self.state)
                 return
+            log.info("Закрытие потока записи")
             self._close_stream()
             self.state = IDLE
         self.title = ICON_IDLE
@@ -263,12 +301,15 @@ class WhisperFlowApp(rumps.App):
     def stop_and_transcribe(self):
         with self.lock:
             if self.state != RECORDING:
+                log.info("stop_and_transcribe: состояние не RECORDING (%s)", self.state)
                 return
+            log.info("Остановка записи и подготовка к транскрипции")
             audio = self._close_stream()
             self.state = BUSY
         self.title = ICON_BUSY
         play_sound("Bottle", self.cfg["sounds"])
         try:
+            log.info("Начало транскрипции (длительность аудио: %.2f сек)", len(audio) / SAMPLE_RATE)
             self.transcribe_and_paste(audio)
         except Exception:
             log.exception("Ошибка распознавания")
@@ -276,11 +317,13 @@ class WhisperFlowApp(rumps.App):
             with self.lock:
                 self.state = IDLE
             self.title = ICON_IDLE
+            log.info("Транскрипция завершена, возврат в IDLE")
 
     # ---------- распознавание и вставка ----------
 
     def transcribe_and_paste(self, audio: np.ndarray):
         duration = len(audio) / SAMPLE_RATE
+        log.info("transcribe_and_paste: длительность аудио %.2f сек", duration)
         if duration < 0.3:
             log.info("Слишком короткая запись (%.2f c) - пропускаю", duration)
             return
@@ -292,14 +335,20 @@ class WhisperFlowApp(rumps.App):
 
         lang = None if self.cfg["language"] == "auto" else self.cfg["language"]
         t0 = time.time()
-        result = mlx_whisper.transcribe(
-            audio,
-            path_or_hf_repo=self.cfg["model"],
-            language=lang,
-            # Пример оформленного текста настраивает модель ставить
-            # пунктуацию и заглавные буквы
-            initial_prompt=self.cfg.get("initial_prompt") or None,
-        )
+        log.info("Вызов mlx_whisper.transcribe (язык: %s)", lang if lang else "auto")
+        try:
+            result = mlx_whisper.transcribe(
+                audio,
+                path_or_hf_repo=self.cfg["model"],
+                language=lang,
+                # Пример оформленного текста настраивает модель ставить
+                # пунктуацию и заглавные буквы
+                initial_prompt=self.cfg.get("initial_prompt") or None,
+            )
+        except Exception:
+            log.exception("Ошибка при вызове mlx_whisper.transcribe")
+            return
+        
         text = result["text"].strip()
         log.info(
             "Распознано за %.1f c (%.1f c аудио, язык %s): %r",
@@ -316,9 +365,11 @@ class WhisperFlowApp(rumps.App):
             return
 
         if self.cfg.get("polish"):
+            log.info("Вызов polish для текста")
             text = self.polish(text)
 
         self.last_text = text
+        log.info("Вставка текста в буфер обмена")
         self.paste_text(text + (" " if self.cfg["append_space"] else ""))
         play_sound("Glass", self.cfg["sounds"])
 
@@ -328,27 +379,30 @@ class WhisperFlowApp(rumps.App):
         Любая ошибка (Ollama не запущена, таймаут) - возвращаем текст как есть,
         диктовка важнее редактуры.
         """
+        log.info("polish: начало обработки текста (%d символов)", len(text))
         try:
             t0 = time.time()
+            req_data = {
+                "model": self.cfg["polish_model"],
+                "messages": [
+                    {"role": "system", "content": self.cfg["polish_prompt"]},
+                    {"role": "user", "content": text},
+                ],
+                "stream": False,
+                "options": {"temperature": 0.2},
+                "keep_alive": "2h",
+            }
+            log.info("polish: отправка запроса к %s (модель: %s)", 
+                     "http://localhost:11434/api/chat", self.cfg["polish_model"])
             req = urllib.request.Request(
                 "http://localhost:11434/api/chat",
-                json.dumps(
-                    {
-                        "model": self.cfg["polish_model"],
-                        "messages": [
-                            {"role": "system", "content": self.cfg["polish_prompt"]},
-                            {"role": "user", "content": text},
-                        ],
-                        "stream": False,
-                        "options": {"temperature": 0.2},
-                        "keep_alive": "2h",
-                    }
-                ).encode(),
+                json.dumps(req_data).encode(),
                 headers={"Content-Type": "application/json"},
             )
             reply = json.loads(urllib.request.urlopen(req, timeout=60).read())
             polished = reply["message"]["content"].strip()
             if not polished:
+                log.warning("polish: пустой ответ от модели")
                 return text
             log.info("Редактура за %.1f c: %r", time.time() - t0, polished)
             return polished
@@ -358,18 +412,26 @@ class WhisperFlowApp(rumps.App):
 
     def paste_text(self, text: str):
         """Вставка через буфер обмена + Cmd+V, старый буфер возвращаем на место."""
-        old_clipboard = get_clipboard()
-        set_clipboard(text)
-        time.sleep(0.15)  # даем системе отпустить модификаторы хоткея
-        # Жмем физическую клавишу V по коду (kVK_ANSI_V = 9), а не символ 'v' -
-        # иначе на русской раскладке Cmd+V не срабатывает
-        v_key = keyboard.KeyCode.from_vk(9)
-        with self.kb.pressed(keyboard.Key.cmd):
-            self.kb.press(v_key)
-            self.kb.release(v_key)
-        time.sleep(0.6)  # приложение должно успеть прочитать буфер до отката
-        if old_clipboard:
-            set_clipboard(old_clipboard)
+        log.info("paste_text: начало вставки (%d символов)", len(text))
+        try:
+            old_clipboard = get_clipboard()
+            log.info("paste_text: сохранение старого буфера (%d символов)", len(old_clipboard) if old_clipboard else 0)
+            set_clipboard(text)
+            log.info("paste_text: текст помещен в буфер обмена")
+            time.sleep(0.15)  # даем системе отпустить модификаторы хоткея
+            # Жмем физическую клавишу V по коду (kVK_ANSI_V = 9), а не символ 'v' -
+            # иначе на русской раскладке Cmd+V не срабатывает
+            v_key = keyboard.KeyCode.from_vk(9)
+            with self.kb.pressed(keyboard.Key.cmd):
+                self.kb.press(v_key)
+                self.kb.release(v_key)
+            log.info("paste_text: отправлена комбинация Cmd+V")
+            time.sleep(0.6)  # приложение должно успеть прочитать буфер до отката
+            if old_clipboard:
+                set_clipboard(old_clipboard)
+                log.info("paste_text: восстановлен старый буфер обмена")
+        except Exception:
+            log.exception("Ошибка при вставке текста")
 
     # ---------- хоткей ----------
 
@@ -380,6 +442,7 @@ class WhisperFlowApp(rumps.App):
             log.info("DEBUG нажата клавиша: %r (state=%s)", key, self.state)
         if key == keyboard.Key.esc:
             if self.state == RECORDING:
+                log.info("Нажат Esc во время записи - отмена")
                 self.cancel_recording()
             return
         # Хоткей не должен считаться блокирующим модификатором
@@ -393,23 +456,28 @@ class WhisperFlowApp(rumps.App):
                 and self.state == RECORDING
                 and self.press_started_recording
             ):
+                log.info("Обнаружено сочетание клавиш во время записи - отмена")
                 self.cancel_recording(silent=True)
             return
         self.hotkey_down = True
         with self.lock:
             if self.state == BUSY or not self.model_ready:
+                log.info("on_press: модель не готова или состояние BUSY - игнорирование нажатия")
                 return
             if self.state == IDLE:
                 # Исключаем сам хоткей из проверки модификаторов
                 other_modifiers = self.held_modifiers - self.hotkeys
                 if other_modifiers:
+                    log.info("on_press: зажат другой модификатор - игнорирование")
                     return  # зажат Cmd/Ctrl/Alt - это шорткат, не диктовка
                 self.press_time = time.time()
                 self.press_started_recording = True
+                log.info("on_press: начало записи (хоткей: %s)", key)
                 self.start_recording()
                 return
             # state == RECORDING: второе нажатие в режиме переключателя
             self.press_started_recording = False
+            log.info("on_press: второе нажатие - остановка записи")
         threading.Thread(target=self.stop_and_transcribe, daemon=True).start()
 
     def on_release(self, key):
@@ -420,14 +488,16 @@ class WhisperFlowApp(rumps.App):
             return
         self.hotkey_down = False
         if self.state != RECORDING or not self.press_started_recording:
+            log.info("on_release: состояние не RECORDING или press_started_recording=False")
             return
         held = time.time() - self.press_time
         if held >= self.cfg["hold_threshold_sec"]:
             # режим рации: отпустила - распознаем
+            log.info("on_release: удержание %.2f сек >= порога - запуск транскрипции", held)
             threading.Thread(target=self.stop_and_transcribe, daemon=True).start()
         else:
             # короткий тап: переключатель, запись продолжается
-            log.info("Режим переключателя: запись до следующего нажатия")
+            log.info("Режим переключателя: запись до следующего нажатия (удержание %.2f сек)", held)
 
     # ---------- меню ----------
 
@@ -439,24 +509,36 @@ class WhisperFlowApp(rumps.App):
         for code, item in self.lang_items.items():
             if item is sender:
                 self.cfg["language"] = code
+                log.info("Язык изменен на: %s", code)
         self._sync_lang_menu()
         save_config(self.cfg)
+        log.info("Конфигурация сохранена")
 
     def menu_polish(self, sender):
         self.cfg["polish"] = not self.cfg.get("polish")
         sender.state = 1 if self.cfg["polish"] else 0
+        log.info("Polish переключен: %s", self.cfg["polish"])
         save_config(self.cfg)
 
     def menu_sounds(self, sender):
         self.cfg["sounds"] = not self.cfg["sounds"]
         sender.state = 1 if self.cfg["sounds"] else 0
+        log.info("Звуки переключены: %s", self.cfg["sounds"])
         save_config(self.cfg)
 
     def menu_copy_last(self, _):
         if self.last_text:
             set_clipboard(self.last_text)
+            log.info("Последний текст скопирован в буфер обмена (%d символов)", len(self.last_text))
+        else:
+            log.info("menu_copy_last: нет текста для копирования")
+
+    def menu_home(self, _):
+        """Обработчик кнопки Home - возвращает статус приложения."""
+        log.info("Нажата кнопка Home. Статус: %s, модель готова: %s", self.state, self.model_ready)
 
     def menu_quit(self, _):
+        log.info("Завершение работы приложения")
         self.listener.stop()
         rumps.quit_application()
 
