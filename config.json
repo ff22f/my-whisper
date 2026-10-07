@@ -1,5 +1,5 @@
 {
-  "hotkey": "alt_r",
+  "hotkey": "ctrl",
   "model": "mlx-community/whisper-large-v3-turbo",
   "language": "auto",
   "sounds": true,

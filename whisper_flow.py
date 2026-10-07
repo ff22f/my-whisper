@@ -47,6 +47,12 @@ SHIFT_KEYS = {
     for name in ("shift", "shift_l", "shift_r")
     if hasattr(keyboard.Key, name)
 }
+# Клавиатура может прислать Control любым из этих кодов, поэтому принимаем всю семью.
+CTRL_KEYS = {
+    getattr(keyboard.Key, name)
+    for name in ("ctrl", "ctrl_l", "ctrl_r")
+    if hasattr(keyboard.Key, name)
+}
 # Если зажат другой модификатор - это сочетание клавиш, а не диктовка
 GUARD_MODIFIERS = {
     getattr(keyboard.Key, name)
@@ -177,6 +183,8 @@ class WhisperFlowApp(rumps.App):
             self.hotkeys = SHIFT_KEYS
         elif hotkey_name.startswith("alt"):
             self.hotkeys = ALT_KEYS
+        elif hotkey_name.startswith("ctrl"):
+            self.hotkeys = CTRL_KEYS
         else:
             self.hotkeys = {getattr(keyboard.Key, hotkey_name, keyboard.Key.shift_r)}
         self.held_modifiers: set = set()
